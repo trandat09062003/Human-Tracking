@@ -1,0 +1,26 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Large media files
+*.mp4
+*.webm
+*.avi
+*.mkv
+
+# Models
+# best.pt (uncomment if you don't want to upload weights)
+# best.pt
+
+# Data / Labels
+auto_labels/
+runs/
+
+# IDEs
+.vscode/
+.idea/
