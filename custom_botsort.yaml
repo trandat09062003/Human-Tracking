@@ -1,0 +1,19 @@
+# Cấu hình BoT-SORT tùy chỉnh tối ưu hóa để giảm thiểu nhảy ID
+# Dự án: Human Tracking (YOLOv11)
+
+tracker_type: botsort # (str) Tracker backend: botsort|bytetrack
+track_high_thresh: 0.35 # (float) First-stage match threshold
+track_low_thresh: 0.1 # (float) Second-stage threshold for low-score matches
+new_track_thresh: 0.4 # (float) Start a new track if no match >= this
+track_buffer: 120 # (int) Frames to keep lost tracks alive; TĂNG LÊN 120 (khoảng 4 giây ở 30fps) giúp nhớ ID cũ khi bị che khuất lâu hơn
+match_thresh: 0.8 # (float) Association similarity threshold (IoU/cost)
+fuse_score: True # (bool) Fuse detection score; Bắt buộc phải có trong phiên bản mới của Ultralytics
+
+# BoT-SORT specifics
+gmc_method: sparseOptFlow # (str) Global motion compensation: sparseOptFlow|orb|sift|ecc|none
+
+# ReID model related thresh
+proximity_thresh: 0.5 # (float) Min IoU to consider tracks proximate for ReID
+appearance_thresh: 0.8 # (float) Min appearance similarity for ReID
+with_reid: False # (bool) Enable ReID model use; tắt Re-ID nếu không có GPU mạnh để tối ưu FPS
+model: auto # (str) ReID model name/path; "auto" uses detector features if available

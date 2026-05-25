@@ -7,8 +7,8 @@ from roboflow import Roboflow
 
 # --- CONFIGURATION ---
 MODEL_PATH = 'best.pt'
-VIDEO_SOURCE = '/home/dat/Desktop/Tracking_Human/2.webm'
-EXTRACT_DIR = '/home/dat/Desktop/Tracking_Human/auto_labels'
+VIDEO_SOURCE = '2.webm'
+EXTRACT_DIR = './auto_labels'
 FRAME_STRIDE = 30  # Extract 1 frame every 30 frames (~1 sec) to avoid heavy redundancy
 CONF_THRESHOLD = 0.5
 
@@ -20,6 +20,7 @@ PROJECT = "human_26"
 # Create storage directories
 os.makedirs(f"{EXTRACT_DIR}/images", exist_ok=True)
 os.makedirs(f"{EXTRACT_DIR}/labels", exist_ok=True)
+
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 

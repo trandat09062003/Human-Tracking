@@ -1,0 +1,10 @@
+# Cấu hình ByteTrack tùy chỉnh tối ưu hóa để giảm thiểu nhảy ID (ID switching)
+# Dự án: Human Tracking (YOLOv11)
+
+tracker_type: bytetrack # (str) Tracker backend: botsort|bytetrack
+track_high_thresh: 0.35 # (float) First-stage match threshold; tăng lên một chút để chỉ nhận diện chất lượng cao làm gốc
+track_low_thresh: 0.1 # (float) Second-stage threshold for low-score matches; giữ 0.1 để bám đối tượng mờ/che khuất
+new_track_thresh: 0.4 # (float) Start a new track if no match >= this; tránh tạo ID rác cho nhiễu
+track_buffer: 120 # (int) Frames to keep lost tracks alive; TĂNG LÊN 120 (khoảng 4 giây ở 30fps) giúp nhớ ID cũ khi bị che khuất lâu hơn
+match_thresh: 0.8 # (float) Association similarity threshold (IoU/cost); ngưỡng khớp hộp
+fuse_score: True # (bool) Fuse detection score; Bắt buộc phải có trong phiên bản mới của Ultralytics

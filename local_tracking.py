@@ -5,19 +5,22 @@ import os
 from ultralytics import YOLO
 
 # --- CONFIGURATION ---
-VIDEO_SOURCE = '2.webm'  # Path to your input video
+VIDEO_SOURCE = r'C:\Users\DELL\OneDrive - Hanoi University of Science and Technology\Desktop\Human_Tracking\Data\Screen Recording 2026-05-26 000928.mp4'  # Path to your input video
 MODEL_PATH = 'best.pt'
 
 # Professional logging configuration
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 class HumanTracker:
-    def __init__(self, model_path=MODEL_PATH):
+    def __init__(self, model_path=MODEL_PATH, tracker_config='custom_tracker.yaml'):
         """
-        Initialize the tracker with YOLO model.
+        Initialize the tracker with YOLO model and tracker configuration.
         """
         logging.info(f"Loading model: {model_path}")
         self.model = YOLO(model_path)
+        self.tracker_config = tracker_config
+        logging.info(f"Using tracker configuration: {tracker_config if tracker_config else 'Default YOLO'}")
 
     def process_video(self, source, output_path=None):
         """
@@ -53,8 +56,22 @@ class HumanTracker:
                 
                 frame_count += 1
 
-                # 1. Human Tracking
-                results = self.model.track(frame, persist=True, classes=[0], verbose=False)[0]
+                # 1. Human Tracking with custom/default tracker
+                if self.tracker_config:
+                    results = self.model.track(
+                        frame, 
+                        persist=True, 
+                        classes=[0], 
+                        tracker=self.tracker_config, 
+                        verbose=False
+                    )[0]
+                else:
+                    results = self.model.track(
+                        frame, 
+                        persist=True, 
+                        classes=[0], 
+                        verbose=False
+                    )[0]
                 
                 # 2. Annotation & Counting
                 if results.boxes.id is not None:
@@ -93,5 +110,12 @@ class HumanTracker:
             logging.info(f"Processing complete. Video saved as: {output_path}")
 
 if __name__ == "__main__":
-    tracker = HumanTracker()
+    # CHỌN GIẢI PHÁP TRACKER TẠI ĐÂY:
+    # 1. 'custom_tracker.yaml'  -> ByteTrack (Tối ưu nhất, khuyên dùng để chống nhảy ID)
+    # 2. 'custom_botsort.yaml'  -> BoT-SORT (Tối ưu tăng bộ nhớ theo vết lên gấp 4 lần)
+    # 3. None                  -> Tracker mặc định của Ultralytics YOLO
+    TRACKER_CONFIG = 'custom_tracker.yaml'
+
+    tracker = HumanTracker(tracker_config=TRACKER_CONFIG)
     tracker.process_video(source=VIDEO_SOURCE)
+

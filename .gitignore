@@ -20,6 +20,9 @@ Thumbs.db
 # Data / Labels
 auto_labels/
 runs/
+human_26-2/
+*.zip
+
 
 # IDEs
 .vscode/
