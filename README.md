@@ -2,6 +2,8 @@
 
 ### Thiết lập mô hình YOLOv11 kết hợp thuật toán ByteTrack & BoT-SORT chống nhảy ID đối tượng
 
+![Views](https://hits.seeyoufarm.com/api/count/incr/badge.svg?url=https%3A%2F%2Fgithub.com%2Ftrandat09062003%2FHuman-Tracking&count_bg=%2379C0FF&title_bg=%23555555&icon=&icon_color=%23E5E5E5&title=views&edge_flat=false)
+
 Dự án phát triển ứng dụng nhận diện, gán nhãn, theo dõi hành trình và đếm số lượng người di chuyển trong khung hình dựa trên mô hình học sâu **YOLOv11** (Ultralytics). Hệ thống tích hợp các thuật toán lọc vết **ByteTrack** và **BoT-SORT** được tinh chỉnh đặc biệt để khắc phục lỗi nhảy ID đối tượng (ID switching) khi xảy ra hiện tượng che khuất tạm thời hoặc di chuyển tốc độ cao.
 
 ---
