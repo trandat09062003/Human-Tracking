@@ -14,15 +14,15 @@ Thumbs.db
 *.mkv
 
 # Models
-# best.pt (uncomment if you don't want to upload weights)
-# best.pt
+# best.pt / best_v5.pt are tracked intentionally for this project
 
-# Data / Labels
+# Data / Labels / datasets (too large for git)
 auto_labels/
+abc/
+abc_autolabel/
 runs/
 human_26-2/
 *.zip
-
 
 # IDEs
 .vscode/

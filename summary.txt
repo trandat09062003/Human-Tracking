@@ -1,0 +1,230 @@
+================================================================================
+HUMAN TRACKING — TÓM TẮT CÔNG NGHỆ, KIẾN TRÚC & THAM SỐ
+Dự án: Human_Tracking | Model: best_v5.pt | Cập nhật: 2026-07-11
+================================================================================
+
+1. MỤC TIÊU HỆ THỐNG
+--------------------------------------------------------------------------------
+Nhận diện và theo dõi người trên video CCTV / screen recording (~1880×1060 @ 30 FPS),
+gán ID ổn định, giảm:
+  - False positive (xe đạp/xe máy nhận nhầm thành người)
+  - ID switch (nhảy ID sang người cạnh khi che khuất / box chồng)
+  - ID fragmentation (che khuất ngắn → cấp ID mới oan)
+
+Ràng buộc thực tế: chạy chủ yếu trên CPU → ưu tiên ổn định ID hơn FPS realtime.
+
+
+2. KIẾN TRÚC TỔNG QUAN (PIPELINE)
+--------------------------------------------------------------------------------
+
+  Frame video
+      │
+      ▼
+  ┌─────────────────────────────────────┐
+  │  (1) YOLO11 Detect — best_v5.pt     │  Ultralytics YOLO.predict()
+  │      class={0: person}              │
+  └─────────────────┬───────────────────┘
+                    │ boxes + conf
+                    ▼
+  ┌─────────────────────────────────────┐
+  │  (2) Pre-filter                     │  Lọc TRƯỚC tracker (quan trọng)
+  │      - conf / aspect / area         │  → FP không được cấp ID
+  │      - nested containment           │
+  │      - overlap NMS (IoU)            │
+  └─────────────────┬───────────────────┘
+                    │ detections sạch
+                    ▼
+  ┌─────────────────────────────────────┐
+  │  (3) BoT-SORT                       │  Ultralytics BOTSORT.update()
+  │      Kalman + IoU association       │  custom_tracker.yaml
+  │      track_buffer giữ lost tracks   │
+  └─────────────────┬───────────────────┘
+                    │ raw track ID
+                    ▼
+  ┌─────────────────────────────────────┐
+  │  (4) Overlap prune (raw tracks)     │  Bỏ raw track chồng IoU cao
+  └─────────────────┬───────────────────┘
+                    ▼
+  ┌─────────────────────────────────────┐
+  │  (5) IDRecoverer                    │  Tự viết (Hungarian + HSV + velocity)
+  │      raw_id → stable_id             │  Khôi phục ID sau miss/occlusion
+  └─────────────────┬───────────────────┘
+                    ▼
+  ┌─────────────────────────────────────┐
+  │  (6) Suppress overlapping IDs       │  2 stable ID chồng → giữ ID già hơn
+  │      demote ID thừa → lost          │
+  └─────────────────┬───────────────────┘
+                    ▼
+  ┌─────────────────────────────────────┐
+  │  (7) Vẽ + ghi video                 │  OpenCV (box màu, nhãn ID, HUD)
+  └─────────────────────────────────────┘
+
+Lý do KHÔNG dùng model.track() end-to-end:
+  - Cần lọc FP / box chồng TRƯỚC khi tracker gán ID.
+  - Cần lớp ổn định ID (IDRecoverer) phía trên BoT-SORT.
+  - Kiểm soát được demote khi box trùng.
+
+
+3. CÔNG NGHỆ SỬ DỤNG & LÝ DO
+--------------------------------------------------------------------------------
+
+3.1. Ultralytics YOLO11 + best_v5.pt
+  Vai trò : Detector — tìm bounding box người mỗi frame.
+  Vì sao  :
+    - YOLO11 Medium cân bằng độ chính xác / tốc độ trên CPU.
+    - best_v5.pt fine-tune 1 class `person` trên dữ liệu domain (CCTV/đường phố).
+    - API predict() cho phép tách detect khỏi track, chèn filter tùy chỉnh.
+  Input   : imgsz=640 (đã kiểm chứng phù hợp model này hơn 960/1280 trên video dự án).
+  Output  : xyxy, conf, cls.
+
+3.2. PyTorch
+  Vai trò : Backend suy luận YOLO.
+  Vì sao  : Ultralytics phụ thuộc PyTorch; tự chọn CUDA nếu có, không thì CPU.
+  Ghi chú : half=True chỉ khi có GPU.
+
+3.3. BoT-SORT (Ultralytics trackers.bot_sort.BOTSORT)
+  Vai trò : Multi-object tracker — liên kết detection qua thời gian, cấp raw ID.
+  Vì sao chọn BoT-SORT thay ByteTrack thuần:
+    - Có Kalman filter dự đoán vị trí khi miss ngắn.
+    - Hỗ trợ GMC (Global Motion Compensation) — hiện tắt vì camera cố định.
+    - Cùng họ ByteTrack (high/low score association) nên bắt được detection yếu tạm thời.
+  with_reid=False:
+    - Deep ReID tốn tài nguyên; trên CPU dễ chậm / lỗi khi gắn thủ công.
+    - Appearance nhẹ chuyển sang IDRecoverer (HSV histogram).
+
+3.4. IDRecoverer (tự triển khai trong local_tracking.py)
+  Vai trò : Ánh xạ raw BoT-SORT ID → stable ID; khôi phục sau occlusion.
+  Vì sao  :
+    - BoT-SORT dễ cấp raw ID mới sau miss → Unique ID tăng ảo.
+    - Cần chính sách “thà giữ ID cũ khi vị trí khớp” + chặn cướp ID người cạnh.
+  Thành phần kỹ thuật:
+    - Hungarian assignment (scipy.optimize.linear_sum_assignment).
+    - Chi phí ghép: khoảng cách tới vị trí dự đoán (velocity) + HSV torso + IoU + area ratio.
+    - Cổng chống neighbor-steal: chỉ chặn recover khi detection giống người active cạnh
+      hơn là giống track đang mất.
+    - Teleport cut: chỉ cắt liên kết raw→stable khi nhảy xa VÀ appearance khác rõ.
+    - Nearest-lost fallback: còn unmatched thì gán lost gần nhất trong bán kính.
+
+3.5. OpenCV (cv2)
+  Vai trò : Đọc/ghi video, vẽ box/nhãn/HUD, tính histogram HSV.
+  Vì sao  : Chuẩn xử lý video + visualization; nhẹ, không phụ thuộc GUI framework.
+
+3.6. NumPy / SciPy / PyYAML
+  NumPy  : Toán box, vector center/velocity.
+  SciPy  : Hungarian matching cho IDRecoverer.
+  PyYAML : Đọc custom_tracker.yaml cấu hình BoT-SORT.
+
+
+4. CHI TIẾT TỪNG LỚP XỬ LÝ
+--------------------------------------------------------------------------------
+
+4.1. Detection (YOLO.predict)
+  DETECT_CONF = 0.28   → lấy candidate rộng.
+  TRACK_CONF  = 0.42   → chỉ đưa vào tracker nếu ≥ ngưỡng này
+                         (chặn FP xe đạp từng quan sát ~0.39).
+  IOU         = 0.35   → NMS YOLO chặt, giảm box trùng ngay từ đầu.
+  IMGSZ       = 640
+  classes=[0]          → chỉ person.
+
+4.2. Pre-filter hình dạng & chồng box
+  MIN_ASPECT / MAX_ASPECT : người đứng CCTV thường ~2.0–4.6; xe đạp thường thấp hơn.
+  MIN_HEIGHT_RATIO / MIN_BOX_AREA : bỏ box quá nhỏ (nhiễu).
+  NEST_THRESH = 0.50   : box nhỏ nằm ≥50% trong box lớn → bỏ (nửa người / cả người).
+  OVERLAP_IOU = 0.40   : IoU cao → giữ conf cao hơn (soft-NMS thủ công).
+
+4.3. BoT-SORT (custom_tracker.yaml)
+  track_high_thresh : 0.35   Association điểm cao.
+  track_low_thresh  : 0.12   Association điểm thấp (ByteTrack-style) — hữu ích khi bị che một phần.
+  new_track_thresh  : 0.45   Ngưỡng tạo raw ID mới (cao hơn → ít track rác).
+  track_buffer      : 150    Giữ lost ~5s @ 30fps — che khuất ngắn không mất track ngay.
+  match_thresh      : 0.80   Trong Ultralytics: cost ≈ 1−IoU; giá trị cao = dễ khớp hơn sau miss.
+  fuse_score        : True   Kết hợp score detection vào khoảng cách khớp.
+  gmc_method        : none   Camera cố định — sparseOptFlow không giúp, đôi khi gây nhiễu.
+  with_reid         : False  Không dùng deep ReID Ultralytics.
+
+4.4. IDRecoverer
+  RECOVER_MAX_FRAMES     = 150   Nhớ lost ID ~5s.
+  RECOVER_MAX_DIST_RATIO = 1.60  max_dist = 1.6 × chiều cao box đã mất.
+  RECOVER_COST_THRESH    = 0.72  Nới để dễ khôi phục sau occlusion.
+  RECOVER_MAX_HIST       = 0.75  Ngưỡng Bhattacharyya appearance (cao = nới).
+  RECOVER_MIN_IOU        = 0.0   Không bắt buộc IoU khi vị trí đã gần.
+  MAX_JUMP_RATIO         = 2.20  Cắt teleport chỉ khi nhảy > 2.2×h VÀ hist khác rõ.
+  MIN_HITS               = 1     Hiện track từ frame đầu (giảm sót người mới).
+
+  Trọng số cost (Hungarian) hiện tại (ưu tiên vị trí):
+    0.55 × dist_norm + 0.30 × hist_dist + 0.10 × (1−IoU) + 0.05 × area_ratio
+
+4.5. Xử lý box / ID chồng sau tracking
+  OVERLAP_IOU (raw)      = 0.40  Prune raw tracks chồng trước IDRecoverer.
+  TRACK_OVERLAP_IOU      = 0.45  Hai stable ID chồng → giữ hits cao / ID cũ hơn.
+  demote_ids()                  ID bị loại chuyển sang lost (không tranh ID tiếp).
+
+
+5. BẢNG THAM SỐ QUAN TRỌNG — CÁCH CHỈNH
+--------------------------------------------------------------------------------
+
+A) Trong local_tracking.py
+
+  Tham số              | Tăng lên                    | Giảm xuống
+  ---------------------|-----------------------------|---------------------------
+  DETECT_CONF          | Ít nhiễu, dễ sót người     | Bắt nhiều hơn, thêm FP
+  TRACK_CONF           | Ít FP (xe đạp), dễ sót      | Bắt người mờ, dễ FP
+  IOU (NMS)            | Giữ nhiều box chồng         | Ít box trùng, dễ gộp 2 người
+  MIN_ASPECT           | Ít box ngang (xe), sót ngồi | Bắt tư thế thấp, thêm FP
+  OVERLAP_IOU          | Dễ gộp 2 người gần nhau     | Cho phép box chồng hơn
+  TRACK_OVERLAP_IOU    | Dễ xóa 1 trong 2 ID gần     | Cho 2 ID chồng hiển thị
+  RECOVER_MAX_FRAMES   | Giữ ID lâu sau mất          | Quên nhanh, ít cướp ID
+  RECOVER_COST_THRESH  | Dễ khôi phục ID cũ          | Khó recover, nhiều ID mới
+  RECOVER_MAX_DIST_RATIO| Recover xa hơn             | Chỉ recover rất gần
+  RECOVER_MAX_HIST     | Nới appearance              | Bắt buộc giống màu áo hơn
+  MAX_JUMP_RATIO       | Ít cắt ID khi box giật      | Cắt nhanh khi nhảy vị trí
+
+B) Trong custom_tracker.yaml
+
+  Tham số              | Tăng lên                    | Giảm xuống
+  ---------------------|-----------------------------|---------------------------
+  track_buffer         | Giữ lost lâu (che khuất)    | Ít gán nhầm sau mất lâu
+  match_thresh         | Dễ khớp IoU thấp (sau miss) | Khớp chặt, ít ID switch
+  new_track_thresh     | Ít raw ID mới (sạch)        | Tạo track nhanh, dễ rác
+  track_high_thresh    | Association “sạch” hơn      | Giữ track conf thấp hơn
+  track_low_thresh     | Ít dùng detection yếu       | Bắt detection rất yếu
+
+
+6. TRADE-OFF ĐÃ KIỂM CHỨNG KHI TỐI ƯU
+--------------------------------------------------------------------------------
+  - CONF quá thấp (≤0.30 vào tracker) → xe đạp/FP nhận ID, Unique tăng loạn.
+  - new_track_thresh quá cao (~0.85) → sót người thật.
+  - track_buffer quá ngắn + recover quá chặt → che khuất nhẹ đã ra ID mới.
+  - recover quá lỏng + buffer dài → ID nhảy sang người đứng cạnh.
+  - GMC sparseOptFlow trên cam cố định → không cải thiện rõ.
+  - Lọc FP SAU model.track() → vô ích vì ID đã được cấp; phải lọc TRƯỚC.
+  - Box chồng không xử lý → 2 box 1 người → 2 ID tranh nhau liên tục.
+
+
+7. FILE CHÍNH TRONG DỰ ÁN
+--------------------------------------------------------------------------------
+  local_tracking.py     Pipeline tracking + IDRecoverer + vẽ/ghi video
+  custom_tracker.yaml   Cấu hình BoT-SORT
+  best_v5.pt            Model YOLO11 fine-tune (person)
+  requirements.txt      ultralytics, opencv, torch, scipy, pyyaml, numpy, ...
+  README.md             Hướng dẫn chạy nhanh
+
+
+8. CÁCH CHẠY
+--------------------------------------------------------------------------------
+  pip install -r requirements.txt
+  # Sửa VIDEO_SOURCE trong local_tracking.py nếu cần
+  python local_tracking.py
+  # Nhấn q để dừng; output: <tên_video>_tracked.mp4
+
+
+9. HƯỚNG PHÁT TRIỂN GỢI Ý
+--------------------------------------------------------------------------------
+  - GPU / TensorRT nếu cần gần realtime.
+  - Deep ReID nhẹ (OSNet) khi nhiều người áo giống nhau.
+  - CLI argparse cho video path / conf / output.
+  - Tách validation set khi train lại model để giảm FP xe đạp từ gốc.
+
+================================================================================
+Hết file tóm tắt
+================================================================================
