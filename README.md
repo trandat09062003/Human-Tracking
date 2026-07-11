@@ -1,133 +1,200 @@
-# Hệ thống Nhận diện và Theo dõi Đối tượng (Human Tracking System)
+# Human Tracking
 
-### Thiết lập mô hình YOLOv11 kết hợp thuật toán ByteTrack & BoT-SORT chống nhảy ID đối tượng
+Nhận diện + theo dõi người trên video (CCTV / screen recording), giữ ID ổn định khi bị che khuất ngắn, và đếm người đi qua một đường ảo trên khung hình.
+
+Model hiện dùng: `best_v5.pt` (YOLO11 fine-tune 1 class `person`). Tracker: BoT-SORT + lớp `IDRecoverer` tự viết phía trên.
 
 ![Views](https://hits.seeyoufarm.com/api/count/incr/badge.svg?url=https%3A%2F%2Fgithub.com%2Ftrandat09062003%2FHuman-Tracking&count_bg=%2379C0FF&title_bg=%23555555&icon=&icon_color=%23E5E5E5&title=views&edge_flat=false)
 
-Dự án phát triển ứng dụng nhận diện, gán nhãn, theo dõi hành trình và đếm số lượng người di chuyển trong khung hình dựa trên mô hình học sâu **YOLOv11** (Ultralytics). Hệ thống tích hợp các thuật toán lọc vết **ByteTrack** và **BoT-SORT** được tinh chỉnh đặc biệt để khắc phục lỗi nhảy ID đối tượng (ID switching) khi xảy ra hiện tượng che khuất tạm thời hoặc di chuyển tốc độ cao.
+---
+
+## Làm được gì
+
+- Detect người mỗi frame bằng YOLO11 (`best_v5.pt`)
+- Theo dõi multi-object, mỗi người một `stable_id` (không dùng thẳng raw ID của BoT-SORT)
+- Lọc false positive trước khi đưa vào tracker (xe đạp / xe máy hay bị nhận nhầm người khi conf thấp)
+- Giảm ID switch / ID mới oan khi che khuất vài giây
+- Vẽ box + nhãn ID + HUD (People / Unique / RTL / FPS)
+- Đếm người cắt đường đỏ, mặc định chỉ tính hướng phải → trái (RTL)
+- Xuất video `*_tracked.mp4`
+
+Chi tiết tham số, trade-off và lý do chọn từng lớp xử lý nằm trong [`summary.txt`](summary.txt).
 
 ---
 
-## 1. Các tính năng của hệ thống
+## Pipeline (không dùng `model.track()` end-to-end)
 
-* **Nhận diện và theo dõi đối tượng (Object Tracking):** Định danh duy nhất (cấp ID không đổi) cho từng đối tượng trong khung hình, đếm số lượng người thực tế và đo tốc độ khung hình (FPS) thời gian thực.
-* **Cơ chế chống nhảy ID đối tượng:** Tùy biến bộ lọc Kalman Filter kết hợp ngưỡng đánh giá IoU chuyển động để lưu trữ dấu vết đối tượng bị che khuất tạm thời lên đến **4 giây (~120 khung hình)** trước khi hủy ID.
-* **Tự động trích xuất nhãn (Auto-labeling Pipeline):** Tự động phát hiện đối tượng, cắt ảnh (crop), lưu trữ nhãn định dạng YOLO từ các video nguồn mới và tự động upload lên dự án Roboflow để mở rộng dữ liệu huấn luyện.
-* **Khả năng tương thích:** Mã nguồn được tối ưu hóa chạy ổn định trên cả hệ điều hành Windows và Linux (xử lý triệt để lỗi unicode đường dẫn `\U` trên Windows).
-* **Nâng cấp mô hình:** Hỗ trợ huấn luyện và triển khai với các kiến trúc YOLOv11 từ phiên bản Nano (2.6 triệu tham số) đến Medium (20.1 triệu tham số) nhằm nâng cao độ chính xác nhận diện.
+```
+Frame
+  → YOLO.predict (best_v5.pt, class person)
+  → Pre-filter (conf / aspect / area / nested / overlap)
+  → BoT-SORT (custom_tracker.yaml)  → raw track ID
+  → Prune raw tracks chồng nhau
+  → IDRecoverer (Hungarian + HSV torso + velocity)  → stable_id
+  → Suppress 2 stable ID chồng → giữ ID già hơn
+  → LineCounter (điểm chân cắt đường đỏ, only_rtl)
+  → Vẽ + ghi video
+```
+
+Lý do tách detect và track thủ công:
+
+1. Phải lọc FP / box chồng **trước** khi tracker cấp ID. Lọc sau `model.track()` thì ID rác đã được tạo rồi.
+2. Cần lớp ổn định ID riêng (`IDRecoverer`) vì BoT-SORT vẫn hay cấp raw ID mới sau miss ngắn.
+3. Kiểm soát được demote / alias khi hai box cùng một người.
 
 ---
 
-## 2. Hướng dẫn thiết lập môi trường
-
-Chạy lệnh sau trên Terminal để cài đặt các thư viện phụ thuộc (bao gồm OpenCV, Ultralytics YOLO, PyTorch và Roboflow API):
+## Cài đặt
 
 ```bash
 python -m pip install -r requirements.txt
 ```
 
-> [!NOTE]
-> Quá trình cài đặt trên hệ điều hành Windows có thể mất một vài phút để hoàn thành tải xuống các file nhị phân của PyTorch hỗ trợ tăng tốc đồ họa.
+Cần: `ultralytics`, `opencv-python`, `torch`, `numpy`, `scipy`, `pyyaml`.  
+Có GPU thì PyTorch dùng CUDA; không có thì chạy CPU (chậm hơn nhưng ổn định ID vẫn được ưu tiên hơn FPS realtime).
 
 ---
 
-## 3. Cấu trúc thư mục mã nguồn
+## Cấu trúc repo
 
 ```text
 Human_Tracking/
-├── Data/                       # Thư mục lưu trữ các tệp video đầu vào (.mp4)
-├── requirements.txt            # Danh sách thư viện phụ thuộc bắt buộc
-├── custom_tracker.yaml         # File cấu hình thuật toán ByteTrack chống nhảy ID
-├── custom_botsort.yaml         # File cấu hình thuật toán BoT-SORT lưu vết mở rộng
-├── local_tracking.py           # Script chính thực hiện theo dõi và lưu video kết quả
-├── auto_label_and_upload.py    # Script tự động cắt khung hình, gán nhãn và gửi lên Roboflow
-├── Human_Tracking_Training.ipynb # File Google Colab Notebook dùng để huấn luyện lại YOLO11
-├── best.pt                     # Trọng số mô hình đã được huấn luyện tốt nhất (YOLO11 Medium)
-└── README.md                   # Tài liệu hướng dẫn sử dụng chi tiết (File này)
+├── local_tracking.py              # pipeline chính
+├── custom_tracker.yaml            # cấu hình BoT-SORT
+├── best_v5.pt                     # model person (fine-tune)
+├── best.pt                        # bản cũ (tham khảo)
+├── requirements.txt
+├── summary.txt                    # ghi chú kỹ thuật / tham số
+├── auto_label_and_upload.py       # cắt frame + nhãn YOLO → Roboflow
+├── Human_Tracking_Training.ipynb  # train lại trên Colab
+├── Data/                          # video đầu vào (local, không commit)
+└── README.md
 ```
+
+Dataset thô (`abc/`, `abc_autolabel/`, video `.mp4`) nằm trong `.gitignore`.
 
 ---
 
-## 4. Hướng dẫn vận hành
+## Chạy tracking
 
-### A. Chạy chương trình theo dõi đối tượng trên video nguồn
-Mở tệp `local_tracking.py` để tùy chỉnh cấu hình nguồn video đầu vào:
+1. Mở `local_tracking.py`, sửa đường dẫn video:
 
 ```python
-# Cấu hình đường dẫn tệp video nguồn (dùng tiền tố r trên Windows để tránh lỗi ký tự đặc biệt)
-VIDEO_SOURCE = r'C:\Users\DELL\OneDrive - Hanoi University of Science and Technology\Desktop\Human_Tracking\Data\Screen Recording 2026-04-08 172540.mp4'
-
-# Lựa chọn file cấu hình thuật toán theo dấu:
-TRACKER_CONFIG = 'custom_tracker.yaml'  # Sử dụng ByteTrack (khuyên dùng)
-# HOẶC
-TRACKER_CONFIG = 'custom_botsort.yaml'  # Sử dụng BoT-SORT
+VIDEO_SOURCE = r"C:\path\to\video.mp4"
+MODEL_PATH = "best_v5.pt"
+TRACKER_YAML = "custom_tracker.yaml"
 ```
 
-Thực thi chạy chương trình:
+Trên Windows nhớ dùng raw string (`r"..."`) để tránh lỗi `\U` trong đường dẫn.
+
+2. Chạy:
+
 ```bash
 python local_tracking.py
 ```
-> [!TIP]
-> Trong quá trình video đang chạy hiển thị trực quan, bạn có thể nhấn phím **`q`** trên bàn phím bất kỳ lúc nào để dừng chương trình sớm. Video kết quả sau khi theo dấu sẽ tự động được xuất ra cùng thư mục dưới tên `[Tên_Video_Gốc]_tracked.mp4`.
+
+3. Cửa sổ preview: nhấn `q` để dừng. Video kết quả ghi cạnh file nguồn, tên `*_tracked.mp4`.
+
+HUD góc trên trái:
+
+| Dòng   | Ý nghĩa                                      |
+|--------|----------------------------------------------|
+| People | Số người đang hiện trên frame                |
+| Unique | Tổng `stable_id` đã xuất hiện trong clip     |
+| RTL    | Số người đã cắt đường theo hướng phải→trái   |
+| FPS    | Tốc độ xử lý                                 |
 
 ---
 
-## 5. Phương pháp tối ưu hóa chống nhảy ID (ID Switching)
+## Đếm người qua đường (LineCounter)
 
-Trong cấu hình mặc định của YOLO, thời gian lưu vết đối tượng bị che khuất tối đa là 30 khung hình (~1 giây với video 30fps). Hệ thống này cấu hình lại hai bộ lọc nâng cao để cải thiện thời gian duy trì vết:
+Đường đỏ cấu hình bằng tọa độ chuẩn hóa 0–1:
 
-### A. Thuật toán ByteTrack (`custom_tracker.yaml` - Khuyên dùng)
-ByteTrack cải tiến thuật toán theo vết bằng cách liên kết cả các bounding box có độ tự tin thấp (Low-score boxes) thay vì loại bỏ chúng ngay lập tức, rất hiệu quả khi đối tượng bị che khuất một phần.
-* **`track_buffer: 120`:** Tăng thời gian lưu vết lên **120 khung hình (~4 giây)**. Đối tượng bị che khuất dưới 4 giây khi xuất hiện trở lại sẽ giữ nguyên ID cũ.
-* **`track_low_thresh: 0.1`:** Duy trì vết ngay cả khi độ tự tin giảm sâu do đối tượng quay lưng hoặc đi vào góc tối.
-
-### B. Thuật toán BoT-SORT (`custom_botsort.yaml`)
-BoT-SORT tích hợp thêm vector chuyển động bù sai số di chuyển của camera (Global Motion Compensation) và các đặc trưng nhận diện ngoại hình (Re-ID).
-* Thích hợp sử dụng cho các video quay từ camera cầm tay, camera rung lắc hoặc di chuyển liên tục.
-* Thiết lập mặc định `with_reid: False` để giảm thiểu tải tính toán cho CPU khi không có card đồ họa GPU chuyên dụng.
-
----
-
-## 6. Quy trình thu thập dữ liệu và huấn luyện lại mô hình
-
-Sơ đồ quy trình mở rộng tập dữ liệu huấn luyện:
-
-```mermaid
-graph TD
-    A[Chạy auto_label_and_upload.py] -->|Tự động gán nhãn & Upload| B[Giao diện Roboflow Web]
-    B -->|Tạo phiên bản Dataset mới v2/v3| C[Google Colab]
-    C -->|Chạy Human_Tracking_Training.ipynb| D[Huấn luyện với YOLO11 Medium]
-    D -->|Tải file best.pt mới về máy| E[Chạy local_tracking.py kiểm tra]
+```python
+COUNT_LINE_NORM = ((0.18, 0.58), (0.92, 0.72))
 ```
 
-### Bước 1: Trích xuất ảnh tự động từ video mới
-Chạy script để trích xuất các khung hình chứa đối tượng, tạo nhãn annotation YOLO tương ứng và gửi lên API Roboflow:
-```bash
-python auto_label_and_upload.py
-```
+- Điểm theo dõi mặc định: **chân** (đáy giữa bounding box), không dùng tâm box — giảm đếm nhầm khi nửa người còn trên đường.
+- Coi là cắt đường khi đoạn chân frame trước → frame này giao đoạn đường, **hoặc** đổi phía so với đường (dấu tích có hướng 2D đổi dấu).
+- `only_rtl=True`: chỉ cộng khi `dx <= 0` (x giảm = đi phải → trái).
+- Mỗi `stable_id` chỉ đếm **một lần** (`counted_ids`).
 
-### Bước 2: Đóng gói Dataset trên Roboflow
-Truy cập vào trang quản lý dự án Roboflow cá nhân của bạn, kiểm tra chất lượng ảnh tự động gán nhãn và nhấn nút **Generate New Version** để tạo một phiên bản dataset mới đóng gói.
-
-### Bước 3: Huấn luyện lại trên Google Colab
-1. Tải tệp notebook `Human_Tracking_Training.ipynb` lên Google Colab.
-2. Thiết lập cấu hình chọn mô hình (ví dụ `yolo11m.pt` - YOLO11 Medium).
-3. Chạy lần lượt các cell lệnh để tải tập dữ liệu tự động từ Roboflow qua API Key và tiến hành huấn luyện.
-4. Tải tệp trọng số `best.pt` sau khi kết thúc huấn luyện về máy và ghi đè vào thư mục dự án để sử dụng.
+Chỉnh `COUNT_LINE_NORM` cho khớp camera / góc quay. Hai đầu đường vẽ chấm đỏ trên preview để dễ canh.
 
 ---
 
-## 7. Hướng dẫn xử lý lỗi thường gặp
+## Tham số hay chỉnh
 
-### Lỗi 1: `unicodeescape` khi khai báo đường dẫn video trên Windows
-* **Khắc phục:** Thêm chữ **`r`** trước chuỗi đường dẫn để định dạng chuỗi thô (Raw String):
-  ```python
-  VIDEO_SOURCE = r'C:\du_an\video.mp4'
-  ```
+### Trong `local_tracking.py`
 
-### Lỗi 2: `AttributeError: 'IterableSimpleNamespace' object has no attribute 'fuse_score'`
-* **Nguyên nhân:** Xảy ra do sự không tương thích phiên bản thư viện `ultralytics` cũ và mới khi khai báo các tham số tracker rút gọn.
-* **Khắc phục:** Sử dụng đầy đủ các tham số cấu hình tiêu chuẩn được thiết lập sẵn trong hai file cấu hình tracker đi kèm dự án (`custom_tracker.yaml` và `custom_botsort.yaml`).
+| Tham số | Hiện tại | Ghi chú ngắn |
+|---------|----------|--------------|
+| `DETECT_CONF` | 0.28 | Lấy candidate rộng |
+| `TRACK_CONF` | 0.42 | Chỉ box ≥ ngưỡng này vào tracker (chặn FP xe đạp ~0.39) |
+| `IOU` | 0.28 | NMS YOLO chặt, ít double-box |
+| `MIN_ASPECT` / `MAX_ASPECT` | 1.70 / 7.00 | Người đứng CCTV thường cao hơn rộng |
+| `NEST_THRESH` | 0.40 | Box nhỏ nằm trong box lớn → bỏ |
+| `OVERLAP_IOU` | 0.25 | Hai box chồng mạnh → giữ conf cao hơn |
+| `TRACK_OVERLAP_IOU` | 0.28 | Hai stable ID chồng → giữ ID già hơn |
+| `MIN_HITS` | 2 | Hiện track sau 2 frame khớp |
+| `RECOVER_MAX_FRAMES` | 150 | Nhớ lost ID ~5s @ 30fps |
 
-### Lỗi 3: Không thể mở tệp video kết quả `_tracked.mp4`
-* **Khắc phục:** OpenCV cần kết thúc tiến trình ghi hoàn chỉnh mới có thể đóng gói phần đuôi của tệp tin video đầu ra. Hãy đảm bảo bạn nhấn phím **`q`** tại cửa sổ hiển thị video để OpenCV kết thúc ghi và lưu file đúng cách trước khi tắt tiến trình Python.
+### Trong `custom_tracker.yaml`
+
+| Tham số | Hiện tại | Ghi chú ngắn |
+|---------|----------|--------------|
+| `tracker_type` | botsort | |
+| `track_buffer` | 150 | Giữ lost ~5s |
+| `match_thresh` | 0.80 | Dễ khớp lại sau miss (cost ≈ 1−IoU) |
+| `new_track_thresh` | 0.45 | Ngưỡng tạo raw ID mới |
+| `gmc_method` | none | Camera cố định, không bật GMC |
+| `with_reid` | False | Không dùng deep ReID (nặng trên CPU) |
+
+Bảng “tăng/giảm tham số thì sao” xem `summary.txt` mục 5.
+
+---
+
+## IDRecoverer (tóm tắt)
+
+BoT-SORT trả về `raw_id`. `IDRecoverer` map sang `stable_id` và cố gắng gắn lại ID cũ sau khi mất track:
+
+- Ghép Hungarian (`scipy.optimize.linear_sum_assignment`)
+- Cost: khoảng cách tới vị trí dự đoán (velocity) + histogram HSV vùng thân + IoU + tỉ lệ diện tích
+- Chặn recover khi detection giống người đang active cạnh hơn là track đang mất (tránh cướp ID)
+- Cắt liên kết raw→stable khi nhảy xa **và** appearance khác rõ (teleport)
+
+---
+
+## Thu thập data / train lại model
+
+1. Chạy `auto_label_and_upload.py` để cắt frame có người, tạo nhãn YOLO, upload Roboflow (cần API key / project của bạn).
+2. Trên Roboflow: review nhãn → Generate New Version.
+3. Mở `Human_Tracking_Training.ipynb` trên Colab, train YOLO11, tải `best.pt` / đổi tên thành `best_v5.pt` nếu muốn thay model hiện tại.
+4. Chạy lại `local_tracking.py` để kiểm tra.
+
+---
+
+## Lỗi thường gặp
+
+**`unicodeescape` trên Windows**  
+Dùng raw string: `VIDEO_SOURCE = r"C:\...\video.mp4"`.
+
+**`AttributeError: ... no attribute 'fuse_score'`**  
+File yaml tracker thiếu field so với bản Ultralytics đang cài. Dùng nguyên `custom_tracker.yaml` trong repo (đã khai báo đủ).
+
+**Mở không được `*_tracked.mp4`**  
+Phải thoát bằng `q` để OpenCV đóng writer đúng cách. Kill process giữa chừng dễ ra file hỏng.
+
+**Đếm RTL = 0 dù thấy người qua đường**  
+Canh lại `COUNT_LINE_NORM`; kiểm tra hướng đi (mặc định chỉ RTL); xem ID có ổn định không (ID nhảy liên tục thì `counted_ids` / điểm chân dễ lệch).
+
+**Nhiều Unique ID ảo**  
+Thường do FP vào tracker hoặc recover quá chặt / buffer ngắn. Tăng `TRACK_CONF`, siết overlap, hoặc nới `RECOVER_*` — xem trade-off trong `summary.txt`.
+
+---
+
+## Ghi chú
+
+- Ưu tiên ổn định ID trên CPU hơn là realtime tuyệt đối.
+- `yolo11n.pt` / video test local không cần commit.
+- Không commit API key Roboflow lên GitHub.
