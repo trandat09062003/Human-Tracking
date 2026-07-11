@@ -12,8 +12,8 @@ EXTRACT_DIR = './auto_labels'
 FRAME_STRIDE = 30  # Extract 1 frame every 30 frames (~1 sec) to avoid heavy redundancy
 CONF_THRESHOLD = 0.5
 
-# Roboflow config
-API_KEY = "le73LYaS0c1EiJwTNssZ"
+# Roboflow config — set ROBOFLOW_API_KEY in env, do not hardcode
+API_KEY = os.environ.get("ROBOFLOW_API_KEY", "")
 WORKSPACE = "facedetection-uqkmv"
 PROJECT = "human_26"
 
@@ -75,6 +75,9 @@ def auto_label():
     return saved_count
 
 def upload_to_roboflow():
+    if not API_KEY:
+        logging.error("Missing ROBOFLOW_API_KEY env var. Skip upload.")
+        return
     logging.info("Connecting to Roboflow to upload new data...")
     rf = Roboflow(api_key=API_KEY)
     project = rf.workspace(WORKSPACE).project(PROJECT)
